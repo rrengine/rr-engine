@@ -64,3 +64,13 @@ shell-backups/
 
 # Claude
 .claude/
+
+# Frontend
+node_modules/
+frontend/dist/
+
+# Geometry output (regenerated on demand)
+geometry/output/
+geometry/test_output/
+*.glb
+*.gltf
