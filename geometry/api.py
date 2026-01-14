@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from shoe_generator import InstrumentalSpecs, generate_and_export
+from shoe_generator import InstrumentalSpecs, MaterialSpecs, generate_and_export
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -43,15 +43,31 @@ OUTPUT_DIR.mkdir(exist_ok=True)
 app.mount("/meshes", StaticFiles(directory=str(OUTPUT_DIR)), name="meshes")
 
 
+class MaterialRequest(BaseModel):
+    """Request model for material specifications."""
+
+    upper_material: str = Field(default="leather", description="Upper material type")
+    sole_material: str = Field(default="rubber", description="Sole material type")
+    upper_color: str = Field(default="#1a1a1a", description="Upper color (hex)")
+    sole_color: str = Field(default="#f5f5f5", description="Sole color (hex)")
+    accent_color: str = Field(default="#3b82f6", description="Accent color (hex)")
+    roughness: float = Field(default=0.5, ge=0, le=1, description="Surface roughness")
+    metallic: float = Field(default=0.0, ge=0, le=1, description="Metallic factor")
+
+
 class GenerateRequest(BaseModel):
     """Request model for geometry generation."""
 
+    # Instrumental specs (geometry-driving)
     shoe_length_mm: float = Field(..., ge=250, le=330, description="Shoe length in mm")
     shoe_width_mm: float = Field(..., ge=90, le=130, description="Shoe width in mm")
     sole_thickness_mm: float = Field(..., ge=20, le=45, description="Sole thickness in mm")
     arch_height_mm: float = Field(..., ge=5, le=35, description="Arch height in mm")
     toe_spring_mm: float = Field(..., ge=5, le=25, description="Toe spring in mm")
     collar_height_mm: float = Field(..., ge=30, le=90, description="Collar height in mm")
+
+    # Non-instrumental specs (materials/colors)
+    materials: Optional[MaterialRequest] = None
 
 
 class GenerateResponse(BaseModel):
@@ -61,6 +77,7 @@ class GenerateResponse(BaseModel):
     anchors_uri: str
     bounds: dict
     geometry_hash: str
+    material_hash: Optional[str] = None
     vertex_count: int
     face_count: int
 
@@ -83,7 +100,7 @@ async def generate_geometry(request: GenerateRequest) -> GenerateResponse:
     """
     Generate 3D shoe geometry from instrumental specifications.
 
-    Takes shoe dimensions and returns a GLB mesh file URI.
+    Takes shoe dimensions and optional materials, returns a GLB mesh file URI.
     """
     try:
         specs = InstrumentalSpecs(
@@ -95,9 +112,24 @@ async def generate_geometry(request: GenerateRequest) -> GenerateResponse:
             collar_height_mm=request.collar_height_mm,
         )
 
-        logger.info(f"Generating geometry for hash: {specs.geometry_hash()}")
+        # Build material specs if provided
+        materials = None
+        if request.materials:
+            materials = MaterialSpecs(
+                upper_material=request.materials.upper_material,
+                sole_material=request.materials.sole_material,
+                upper_color=request.materials.upper_color,
+                sole_color=request.materials.sole_color,
+                accent_color=request.materials.accent_color,
+                roughness=request.materials.roughness,
+                metallic=request.materials.metallic,
+            )
 
-        result = generate_and_export(specs, OUTPUT_DIR)
+        logger.info(f"Generating geometry for hash: {specs.geometry_hash()}")
+        if materials:
+            logger.info(f"With materials: {materials.upper_color} upper, {materials.sole_color} sole")
+
+        result = generate_and_export(specs, OUTPUT_DIR, materials)
 
         # Convert absolute paths to relative URIs for frontend
         mesh_filename = Path(result["mesh_uri"]).name
@@ -108,6 +140,7 @@ async def generate_geometry(request: GenerateRequest) -> GenerateResponse:
             anchors_uri=f"/meshes/{anchors_filename}",
             bounds=result["bounds"],
             geometry_hash=result["geometry_hash"],
+            material_hash=result.get("material_hash"),
             vertex_count=result["vertex_count"],
             face_count=result["face_count"],
         )

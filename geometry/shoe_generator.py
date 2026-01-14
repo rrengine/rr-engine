@@ -3,20 +3,31 @@ Production-grade parametric shoe mesh generator.
 
 Generates real 3D shoe geometry from instrumental specifications.
 Uses Trimesh for mesh operations and exports to GLB format.
+Supports PBR materials with colors, roughness, and metallic properties.
 """
 
 import hashlib
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Tuple
+from typing import Tuple, Optional
 
 import numpy as np
 import trimesh
+from trimesh.visual.material import PBRMaterial
 from scipy.spatial import Delaunay
 
 logger = logging.getLogger(__name__)
+
+
+def hex_to_rgba(hex_color: str, alpha: float = 1.0) -> Tuple[int, int, int, int]:
+    """Convert hex color string to RGBA tuple (0-255)."""
+    hex_color = hex_color.lstrip('#')
+    r = int(hex_color[0:2], 16)
+    g = int(hex_color[2:4], 16)
+    b = int(hex_color[4:6], 16)
+    return (r, g, b, int(alpha * 255))
 
 
 @dataclass
@@ -60,6 +71,49 @@ class InstrumentalSpecs:
         """Compute deterministic hash for these specs."""
         canonical = json.dumps(self.to_dict(), sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(canonical.encode()).hexdigest()[:16]
+
+
+@dataclass
+class MaterialSpecs:
+    """Non-instrumental material and color specifications."""
+    upper_material: str = "leather"
+    sole_material: str = "rubber"
+    upper_color: str = "#1a1a1a"
+    sole_color: str = "#f5f5f5"
+    accent_color: str = "#3b82f6"
+    roughness: float = 0.5
+    metallic: float = 0.0
+
+    def to_dict(self) -> dict:
+        return {
+            "upper_material": self.upper_material,
+            "sole_material": self.sole_material,
+            "upper_color": self.upper_color,
+            "sole_color": self.sole_color,
+            "accent_color": self.accent_color,
+            "roughness": self.roughness,
+            "metallic": self.metallic,
+        }
+
+    def material_hash(self) -> str:
+        """Compute hash for material specs (separate from geometry)."""
+        canonical = json.dumps(self.to_dict(), sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(canonical.encode()).hexdigest()[:8]
+
+
+# Material roughness presets based on material type
+MATERIAL_ROUGHNESS = {
+    "leather": 0.6,
+    "suede": 0.9,
+    "canvas": 0.8,
+    "mesh": 0.7,
+    "synthetic": 0.4,
+    "knit": 0.85,
+    "rubber": 0.7,
+    "foam": 0.9,
+    "gum": 0.5,
+    "translucent": 0.2,
+}
 
 
 @dataclass
@@ -188,6 +242,36 @@ def _generate_sole_mesh(specs: InstrumentalSpecs) -> trimesh.Trimesh:
 
     mesh = trimesh.Trimesh(vertices=vertices, faces=faces)
     mesh.fix_normals()
+
+    return mesh
+
+
+def _apply_material_to_mesh(
+    mesh: trimesh.Trimesh,
+    color: str,
+    material_type: str,
+    roughness: float,
+    metallic: float
+) -> trimesh.Trimesh:
+    """Apply PBR material to a mesh."""
+    # Get base roughness for material type, then blend with user value
+    base_roughness = MATERIAL_ROUGHNESS.get(material_type, 0.5)
+    final_roughness = (base_roughness + roughness) / 2
+
+    # Create PBR material
+    rgba = hex_to_rgba(color)
+    material = PBRMaterial(
+        baseColorFactor=[rgba[0] / 255, rgba[1] / 255, rgba[2] / 255, 1.0],
+        roughnessFactor=final_roughness,
+        metallicFactor=metallic,
+    )
+
+    # Apply vertex colors for fallback rendering
+    vertex_colors = np.tile(rgba, (len(mesh.vertices), 1))
+    mesh.visual = trimesh.visual.ColorVisuals(mesh=mesh, vertex_colors=vertex_colors)
+
+    # Attach PBR material
+    mesh.visual.material = material
 
     return mesh
 
@@ -322,12 +406,16 @@ def _compute_anchor_points(specs: InstrumentalSpecs, combined_mesh: trimesh.Trim
     )
 
 
-def generate_shoe_mesh(specs: InstrumentalSpecs) -> GeometryResult:
+def generate_shoe_mesh(
+    specs: InstrumentalSpecs,
+    materials: Optional[MaterialSpecs] = None
+) -> GeometryResult:
     """
     Generate complete shoe geometry from instrumental specifications.
 
     Args:
         specs: Validated instrumental specifications
+        materials: Optional material specifications for colors and PBR properties
 
     Returns:
         GeometryResult containing mesh, anchors, bounds, and metadata
@@ -337,13 +425,34 @@ def generate_shoe_mesh(specs: InstrumentalSpecs) -> GeometryResult:
     """
     specs.validate()
 
+    if materials is None:
+        materials = MaterialSpecs()
+
     logger.info(f"Generating shoe mesh for specs hash: {specs.geometry_hash()}")
+    logger.info(f"Materials: {materials.upper_material} upper, {materials.sole_material} sole")
 
     # Generate component meshes
     sole_mesh = _generate_sole_mesh(specs)
     upper_mesh = _generate_upper_mesh(specs, sole_mesh)
 
-    # Combine into single mesh
+    # Apply materials to each component
+    sole_mesh = _apply_material_to_mesh(
+        sole_mesh,
+        color=materials.sole_color,
+        material_type=materials.sole_material,
+        roughness=materials.roughness,
+        metallic=materials.metallic,
+    )
+
+    upper_mesh = _apply_material_to_mesh(
+        upper_mesh,
+        color=materials.upper_color,
+        material_type=materials.upper_material,
+        roughness=materials.roughness,
+        metallic=materials.metallic,
+    )
+
+    # Combine into single mesh (preserves vertex colors)
     combined_mesh = trimesh.util.concatenate([sole_mesh, upper_mesh])
     combined_mesh.fix_normals()
 
@@ -432,7 +541,8 @@ def export_anchors(result: GeometryResult, output_dir: Path) -> Path:
 
 def generate_and_export(
     specs: InstrumentalSpecs,
-    output_dir: Path
+    output_dir: Path,
+    materials: Optional[MaterialSpecs] = None
 ) -> dict:
     """
     Full pipeline: generate mesh and export all assets.
@@ -440,13 +550,24 @@ def generate_and_export(
     Args:
         specs: Instrumental specifications
         output_dir: Directory for output files
+        materials: Optional material specifications
 
     Returns:
         Dictionary with mesh_uri, anchors_uri, bounds, and geometry_hash
     """
-    result = generate_shoe_mesh(specs)
+    result = generate_shoe_mesh(specs, materials)
 
-    glb_path = export_to_glb(result, output_dir)
+    # Include material hash in filename if materials are custom
+    if materials is not None:
+        file_hash = f"{result.geometry_hash}_{materials.material_hash()}"
+    else:
+        file_hash = result.geometry_hash
+
+    glb_path = output_dir / f"{file_hash}.glb"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    result.mesh.export(str(glb_path), file_type="glb")
+    logger.info(f"Exported GLB to {glb_path}")
+
     anchors_path = export_anchors(result, output_dir)
 
     return {
@@ -457,6 +578,7 @@ def generate_and_export(
             "max": list(result.bounds_max),
         },
         "geometry_hash": result.geometry_hash,
+        "material_hash": materials.material_hash() if materials else None,
         "vertex_count": result.vertex_count,
         "face_count": result.face_count,
     }

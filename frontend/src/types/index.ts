@@ -11,24 +11,55 @@ export interface InstrumentalSpecs {
   collar_height_mm: number;
 }
 
-export interface NonInstrumentalSpecs {
-  materials?: {
-    upper?: string;
-    lining?: string;
-    outsole?: string;
-  };
-  colors?: {
-    primary_hex?: string;
-    secondary_hex?: string;
-  };
-  branding?: {
-    monogram_placement?: string;
-    embroidery_thread?: string;
-  };
-  textures?: {
-    upper_texture?: string;
-  };
+export interface MaterialSpecs {
+  upper: string;
+  sole: string;
 }
+
+export interface ColorSpecs {
+  upper_color: string;
+  sole_color: string;
+  accent_color: string;
+}
+
+export interface NonInstrumentalSpecs {
+  materials: MaterialSpecs;
+  colors: ColorSpecs;
+  roughness: number;
+  metallic: number;
+}
+
+export const MATERIAL_OPTIONS = {
+  upper: [
+    { value: 'leather', label: 'Leather' },
+    { value: 'suede', label: 'Suede' },
+    { value: 'canvas', label: 'Canvas' },
+    { value: 'mesh', label: 'Mesh' },
+    { value: 'synthetic', label: 'Synthetic' },
+    { value: 'knit', label: 'Knit' },
+  ],
+  sole: [
+    { value: 'rubber', label: 'Rubber' },
+    { value: 'foam', label: 'Foam (EVA)' },
+    { value: 'leather', label: 'Leather' },
+    { value: 'gum', label: 'Gum' },
+    { value: 'translucent', label: 'Translucent' },
+  ],
+} as const;
+
+export const DEFAULT_NON_INSTRUMENTAL_SPECS: NonInstrumentalSpecs = {
+  materials: {
+    upper: 'leather',
+    sole: 'rubber',
+  },
+  colors: {
+    upper_color: '#1a1a1a',
+    sole_color: '#f5f5f5',
+    accent_color: '#3b82f6',
+  },
+  roughness: 0.5,
+  metallic: 0.0,
+};
 
 export interface GeometryAsset {
   mesh_uri: string;
@@ -74,6 +105,7 @@ export interface GenerateResult {
     max: [number, number, number];
   };
   geometry_hash: string;
+  material_hash?: string | null;
   vertex_count: number;
   face_count: number;
 }
